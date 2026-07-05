@@ -1,0 +1,8 @@
+{
+  "name": "Podcast Guest Booking Manager",
+  "description": "Enterprise AI agent system for podcast PR outreach automation, guest interview prep, automated email scheduling, sheets lead analysis, and calendar synchronization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
