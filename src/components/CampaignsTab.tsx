@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { Plus, Mail, Clock, Eye, Check, AlertCircle, Play, Pause, ChevronDown, Sparkles, Loader2, Edit2, Trash2, FileText, Tag, X, Search } from 'lucide-react';
 import { Campaign, CampaignStep, Lead, PitchTemplate } from '../types';
@@ -46,6 +46,13 @@ export const CampaignsTab: React.FC = () => {
   const [targetRoles, setTargetRoles] = useState<('guest' | 'host')[]>([]);
   const [targetNiches, setTargetNiches] = useState<string[]>([]);
   const [targetTags, setTargetTags] = useState<string[]>([]);
+  const [excludedLeadIds, setExcludedLeadIds] = useState<string[]>([]);
+
+  // Queue tab states
+  const [selectedQueueLeadIds, setSelectedQueueLeadIds] = useState<string[]>([]);
+  const [autoApproveQueue, setAutoApproveQueue] = useState<boolean>(() => {
+    return localStorage.getItem('auto_approve_queue') === 'true';
+  });
 
   // Timezone-based scheduling states
   const [timezone, setTimezone] = useState("Prospect's Local");
@@ -125,6 +132,33 @@ export const CampaignsTab: React.FC = () => {
   ]);
 
   const [activeTab, setActiveTab] = useState<'campaigns' | 'queue' | 'templates'>('campaigns');
+
+  // Sync autoApproveQueue with localStorage
+  useEffect(() => {
+    localStorage.setItem('auto_approve_queue', String(autoApproveQueue));
+  }, [autoApproveQueue]);
+
+  // Client-side background Auto-Approve loop
+  useEffect(() => {
+    if (autoApproveQueue) {
+      const pendingLeads = leads.filter(l => l.status === 'new');
+      if (pendingLeads.length > 0 && campaigns.length > 0) {
+        const activeCampaign = campaigns[0];
+        if (activeCampaign) {
+          const runAutoApprove = async () => {
+            for (const lead of pendingLeads) {
+              try {
+                await sendCampaignImmediate(activeCampaign.id, lead.id);
+              } catch (err) {
+                console.error(`Auto-approve failed for ${lead.name}:`, err);
+              }
+            }
+          };
+          runAutoApprove();
+        }
+      }
+    }
+  }, [leads, autoApproveQueue, campaigns]);
   const [previewLeadId, setPreviewLeadId] = useState<string | null>(null);
   const [previewStepIdx, setPreviewStepIdx] = useState<number>(0);
 
@@ -199,7 +233,16 @@ export const CampaignsTab: React.FC = () => {
 
   const handleSaveCampaign = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!campaignTitle || matchingLeads.length === 0) return;
+
+    // Filter matching leads based on manual exclusions
+    const finalTargetedLeads = targetingMode === 'segment'
+      ? matchingLeads.filter(l => !excludedLeadIds.includes(l.id))
+      : matchingLeads;
+
+    if (!campaignTitle || finalTargetedLeads.length === 0) {
+      alert('Please select or match at least one prospect to create this campaign.');
+      return;
+    }
 
     // Build unique IDs for steps
     const formattedSteps: CampaignStep[] = steps.map((s, idx) => ({
@@ -209,7 +252,7 @@ export const CampaignsTab: React.FC = () => {
 
     const campaignPayload = {
       title: campaignTitle,
-      leadIds: matchingLeads.map(l => l.id),
+      leadIds: finalTargetedLeads.map(l => l.id),
       steps: formattedSteps,
       dailySendLimit,
       clientId: selectedClientId || undefined,
@@ -219,6 +262,7 @@ export const CampaignsTab: React.FC = () => {
         niches: targetNiches,
         tags: targetTags
       } : undefined,
+      excludedLeadIds: targetingMode === 'segment' ? excludedLeadIds : [],
       timezone,
       preferredTime,
       sendDays: deliveryDaysMode === 'custom' ? selectedCustomDays : deliveryDaysMode
@@ -242,6 +286,7 @@ export const CampaignsTab: React.FC = () => {
     setTargetRoles([]);
     setTargetNiches([]);
     setTargetTags([]);
+    setExcludedLeadIds([]);
     setTargetingMode('individual');
     setTimezone("Prospect's Local");
     setPreferredTime('09:00');
@@ -600,6 +645,39 @@ export const CampaignsTab: React.FC = () => {
                         )}
                       </div>
                     </div>
+                    {/* Matched Prospects Checklist with Manual Exclude */}
+                    {matchingLeads.length > 0 && (
+                      <div className="space-y-2 pt-3 border-t border-slate-800/60 mt-3 animate-fade-in col-span-1 md:col-span-3 text-left">
+                        <label className="text-[10px] font-mono uppercase tracking-wider text-slate-400 block font-bold">
+                          Matched Prospects List (Uncheck to Exclude)
+                        </label>
+                        <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 max-h-36 overflow-y-auto space-y-1.5 text-left">
+                          {matchingLeads.map(lead => {
+                            const isExcluded = excludedLeadIds.includes(lead.id);
+                            return (
+                              <label key={lead.id} className="flex items-center gap-2.5 text-xs text-slate-300 hover:text-white cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={!isExcluded}
+                                  onChange={() => {
+                                    if (isExcluded) {
+                                      setExcludedLeadIds(excludedLeadIds.filter(id => id !== lead.id));
+                                    } else {
+                                      setExcludedLeadIds([...excludedLeadIds, lead.id]);
+                                    }
+                                  }}
+                                  className="rounded bg-slate-900 border-slate-800 text-emerald-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                                />
+                                <span className="font-semibold text-slate-200">{lead.name}</span>
+                                <span className="text-[10px] font-mono text-slate-500">
+                                  ({lead.contactEmails[0]}, role: {lead.role || 'unassigned'}, niche: {lead.niche || 'unassigned'})
+                                </span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="space-y-2 pt-2 animate-fade-in">
@@ -727,94 +805,161 @@ export const CampaignsTab: React.FC = () => {
                 </div>
               </div>
 
-              {/* Sequence Steps Builder */}
-              <div className="space-y-4">
-                <h4 className="text-xs font-sans font-bold text-emerald-400">Campaign Sequence steps</h4>
-                {steps.map((step, idx) => (
-                  <div key={idx} className="bg-slate-950 border border-slate-800 rounded-lg p-4 space-y-3 relative">
-                    <div className="flex justify-between items-center gap-4">
-                      <span className="bg-slate-800 text-slate-300 px-2 py-0.5 rounded text-[10px] font-bold">
-                        STEP {idx + 1}
-                      </span>
-                      
-                      {templates && templates.length > 0 && (
-                        <div className="flex items-center gap-1.5 ml-auto">
-                          <span className="text-[10px] text-slate-500 font-mono">Quick load template:</span>
-                          <select
-                            onChange={(e) => {
-                              const t = templates.find(item => item.id === e.target.value);
-                              if (t) {
-                                handleStepChange(idx, 'subject', t.subject);
-                                handleStepChange(idx, 'bodyTemplate', t.bodyTemplate);
-                              }
-                              e.target.value = ''; // reset
-                            }}
-                            className="bg-slate-900 text-slate-300 border border-slate-800 rounded px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+              {/* Sequence Steps Builder with Quick Tips Sidebar */}
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                <div className="lg:col-span-3 space-y-4 text-left">
+                  <h4 className="text-xs font-sans font-bold text-emerald-400">Campaign Sequence Steps</h4>
+                  {steps.map((step, idx) => (
+                    <div key={idx} className="bg-slate-950 border border-slate-800 rounded-lg p-4 space-y-3 relative text-left">
+                      <div className="flex justify-between items-center gap-4">
+                        <span className="bg-slate-800 text-slate-300 px-2 py-0.5 rounded text-[10px] font-bold">
+                          STEP {idx + 1}
+                        </span>
+                        
+                        {templates && templates.length > 0 && (
+                          <div className="flex items-center gap-1.5 ml-auto">
+                            <span className="text-[10px] text-slate-500 font-mono">Quick load template:</span>
+                            <select
+                              onChange={(e) => {
+                                const t = templates.find(item => item.id === e.target.value);
+                                if (t) {
+                                  handleStepChange(idx, 'subject', t.subject);
+                                  handleStepChange(idx, 'bodyTemplate', t.bodyTemplate);
+                                }
+                                e.target.value = ''; // reset
+                              }}
+                              className="bg-slate-900 text-slate-300 border border-slate-800 rounded px-1.5 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                            >
+                              <option value="">-- Choose Template --</option>
+                              {templates.map(t => (
+                                <option key={t.id} value={t.id}>{t.title} ({t.category})</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+
+                        {steps.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => removeStep(idx)}
+                            className="text-xs text-red-400 hover:text-red-300 font-mono cursor-pointer"
                           >
-                            <option value="">-- Choose Template --</option>
-                            {templates.map(t => (
-                              <option key={t.id} value={t.id}>{t.title} ({t.category})</option>
-                            ))}
-                          </select>
+                            Delete
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="md:col-span-2 space-y-1">
+                          <label className="text-[10px] text-slate-400">Subject Template (supports place-holders like {"{{guest_name}}"})</label>
+                          <input
+                            type="text"
+                            value={step.subject}
+                            onChange={(e) => handleStepChange(idx, 'subject', e.target.value)}
+                            required
+                            className="w-full bg-slate-900 text-slate-100 border border-slate-800 rounded p-1.5 text-xs focus:outline-none"
+                          />
                         </div>
-                      )}
-
-                      {steps.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => removeStep(idx)}
-                          className="text-xs text-red-400 hover:text-red-300 font-mono cursor-pointer"
-                        >
-                          Delete
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      <div className="md:col-span-2 space-y-1">
-                        <label className="text-[10px] text-slate-400">Subject Template (supports place-holders like {"{{guest_name}}"})</label>
-                        <input
-                          type="text"
-                          value={step.subject}
-                          onChange={(e) => handleStepChange(idx, 'subject', e.target.value)}
-                          required
-                          className="w-full bg-slate-900 text-slate-100 border border-slate-800 rounded p-1.5 text-xs focus:outline-none"
-                        />
+                        <div className="space-y-1">
+                          <label className="text-[10px] text-slate-400">Send Delay Days (after previous step)</label>
+                          <input
+                            type="number"
+                            value={step.delayDays}
+                            onChange={(e) => handleStepChange(idx, 'delayDays', Number(e.target.value))}
+                            required
+                            className="w-full bg-slate-900 text-slate-100 border border-slate-800 rounded p-1.5 text-xs focus:outline-none"
+                          />
+                        </div>
                       </div>
+
                       <div className="space-y-1">
-                        <label className="text-[10px] text-slate-400">Send Delay Days (after previous step)</label>
-                        <input
-                          type="number"
-                          value={step.delayDays}
-                          onChange={(e) => handleStepChange(idx, 'delayDays', Number(e.target.value))}
+                        <label className="text-[10px] text-slate-400">Body Template</label>
+                        <textarea
+                          value={step.bodyTemplate}
+                          onChange={(e) => handleStepChange(idx, 'bodyTemplate', e.target.value)}
+                          rows={4}
                           required
-                          className="w-full bg-slate-900 text-slate-100 border border-slate-800 rounded p-1.5 text-xs focus:outline-none"
+                          className="w-full bg-slate-900 text-slate-100 border border-slate-800 rounded p-1.5 text-xs font-mono focus:outline-none"
                         />
                       </div>
                     </div>
+                  ))}
 
-                    <div className="space-y-1">
-                      <label className="text-[10px] text-slate-400">Body Template</label>
-                      <textarea
-                        value={step.bodyTemplate}
-                        onChange={(e) => handleStepChange(idx, 'bodyTemplate', e.target.value)}
-                        rows={4}
-                        required
-                        className="w-full bg-slate-900 text-slate-100 border border-slate-800 rounded p-1.5 text-xs font-mono focus:outline-none"
-                      />
+                  {steps.length < 5 && (
+                    <button
+                      type="button"
+                      onClick={addStep}
+                      className="text-xs text-emerald-400 hover:text-emerald-300 font-sans flex items-center gap-1 cursor-pointer"
+                    >
+                      + Add Sequence Step (Follow-up)
+                    </button>
+                  )}
+                </div>
+
+                {/* Sticky Quick Tips & Tokens Panel */}
+                <div className="lg:col-span-1 bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-4 self-start sticky top-4 text-left">
+                  <div>
+                    <h4 className="text-xs font-sans font-bold text-emerald-400 flex items-center gap-1.5 uppercase tracking-wider">
+                      <Sparkles className="w-4 h-4 text-emerald-400 animate-pulse" />
+                      Quick Tips & Tokens
+                    </h4>
+                    <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+                      Click any dynamic token below to instantly copy it. You can paste it into your Subject or Body templates to inject real prospect/client variables.
+                    </p>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <h5 className="text-[9px] font-mono uppercase text-slate-500 tracking-wider font-bold">Prospect Fields</h5>
+                    <div className="space-y-1.5">
+                      {[
+                        { token: '{{guest_name}}', desc: 'Prospect full name' },
+                        { token: '{{niche}}', desc: 'Niche / Category' },
+                        { token: '{{topics}}', desc: 'Speaking topics list' },
+                        { token: '{{bio}}', desc: 'Brief guest biography' },
+                        { token: '{{website}}', desc: 'Website address' },
+                        { token: '{{podcast}}', desc: 'Show / Organization' }
+                      ].map(item => (
+                        <button
+                          key={item.token}
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(item.token);
+                            alert(`Copied "${item.token}" to clipboard!`);
+                          }}
+                          className="px-2 py-1 bg-slate-900 border border-slate-800 rounded text-[10px] font-mono text-emerald-300 hover:text-emerald-200 hover:border-slate-700 hover:bg-slate-850 cursor-pointer flex flex-col items-start gap-0.5 w-full text-left transition-all"
+                        >
+                          <span className="font-bold text-emerald-400">{item.token}</span>
+                          <span className="text-[9px] text-slate-500 font-sans">{item.desc}</span>
+                        </button>
+                      ))}
                     </div>
                   </div>
-                ))}
 
-                {steps.length < 5 && (
-                  <button
-                    type="button"
-                    onClick={addStep}
-                    className="text-xs text-emerald-400 hover:text-emerald-300 font-sans flex items-center gap-1"
-                  >
-                    + Add Sequence Step (Follow-up)
-                  </button>
-                )}
+                  <div className="space-y-2 border-t border-slate-800/60 pt-3">
+                    <h5 className="text-[9px] font-mono uppercase text-slate-500 tracking-wider font-bold">Linked Client Fields</h5>
+                    <div className="space-y-1.5">
+                      {[
+                        { token: '{{client_name}}', desc: 'Client brand name' },
+                        { token: '{{client_podcast}}', desc: 'Client podcast show' },
+                        { token: '{{client_niche}}', desc: 'Client industry niche' },
+                        { token: '{{client_description}}', desc: 'Client description / pitch' }
+                      ].map(item => (
+                        <button
+                          key={item.token}
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(item.token);
+                            alert(`Copied "${item.token}" to clipboard!`);
+                          }}
+                          className="px-2 py-1 bg-slate-900 border border-slate-800 rounded text-[10px] font-mono text-indigo-300 hover:text-indigo-200 hover:border-slate-700 hover:bg-slate-850 cursor-pointer flex flex-col items-start gap-0.5 w-full text-left transition-all"
+                        >
+                          <span className="font-bold text-indigo-400">{item.token}</span>
+                          <span className="text-[9px] text-slate-500 font-sans">{item.desc}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
               </div>
 
               <div className="flex justify-end gap-2 pt-2">
@@ -967,6 +1112,31 @@ export const CampaignsTab: React.FC = () => {
                       setTargetRoles(camp.targetSegments?.roles || []);
                       setTargetNiches(camp.targetSegments?.niches || []);
                       setTargetTags(camp.targetSegments?.tags || []);
+
+                      // Pre-populate excluded lead IDs
+                      if (camp.excludedLeadIds) {
+                        setExcludedLeadIds(camp.excludedLeadIds);
+                      } else if (camp.targetSegments) {
+                        const roles = camp.targetSegments.roles || [];
+                        const niches = camp.targetSegments.niches || [];
+                        const tags = camp.targetSegments.tags || [];
+                        const matched = leads.filter(l => {
+                          const roleMatch = roles.length === 0 || (l.role && roles.some(r => r.toLowerCase() === l.role?.toLowerCase()));
+                          const nicheMatch = niches.length === 0 || (l.niche && niches.some(n => n.toLowerCase() === l.niche?.toLowerCase()));
+                          
+                          let leadTags: string[] = [];
+                          if (Array.isArray(l.tags)) leadTags = l.tags;
+                          else if (typeof l.tags === 'string' && l.tags) leadTags = l.tags.split(',').map(t => t.trim());
+                          
+                          const tagMatch = tags.length === 0 || (leadTags.length > 0 && leadTags.some(t => tags.some(sel => sel.toLowerCase() === t.toLowerCase())));
+                          return roleMatch && nicheMatch && tagMatch;
+                        });
+                        const excluded = matched.filter(l => !camp.leadIds.includes(l.id)).map(l => l.id);
+                        setExcludedLeadIds(excluded);
+                      } else {
+                        setExcludedLeadIds([]);
+                      }
+
                       setTimezone(camp.timezone || "Prospect's Local");
                       setPreferredTime(camp.preferredTime || '09:00');
                       if (camp.sendDays === 'weekdays' || camp.sendDays === 'everyday') {
@@ -1319,36 +1489,133 @@ export const CampaignsTab: React.FC = () => {
       {activeTab === 'queue' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* List of pending approvals */}
-          <div className="lg:col-span-1 space-y-3 bg-slate-900 border border-slate-800 p-4 rounded-xl max-h-[500px] overflow-y-auto">
-            <h3 className="text-sm font-sans font-bold text-white border-b border-slate-800 pb-2">Pending Ingestion</h3>
-            {leads.filter(l => l.status === 'new').map((lead) => (
+          <div className="lg:col-span-1 space-y-3 bg-slate-900 border border-slate-800 p-4 rounded-xl max-h-[550px] overflow-y-auto flex flex-col text-left">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+              <h3 className="text-sm font-sans font-bold text-white">Pending Ingestion</h3>
+              
+              {/* Auto-Approve Toggle */}
               <button
-                key={lead.id}
-                onClick={() => {
-                  setPreviewLeadId(lead.id);
-                  setPreviewStepIdx(0);
-                }}
-                className={`w-full text-left p-3 rounded-lg border transition-all flex flex-col gap-1 ${
-                  previewLeadId === lead.id
-                    ? 'bg-slate-800 border-emerald-500/50 text-white'
-                    : 'bg-slate-950 border-slate-800 text-slate-300 hover:bg-slate-900/40'
+                type="button"
+                onClick={() => setAutoApproveQueue(!autoApproveQueue)}
+                className={`flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-mono font-bold border transition-all cursor-pointer ${
+                  autoApproveQueue
+                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 font-semibold'
+                    : 'bg-slate-950 text-slate-500 border-slate-800'
                 }`}
+                title="Automatically approve and send newly parsed prospects"
               >
-                <p className="text-xs font-semibold">{lead.name}</p>
-                <p className="text-[10px] font-mono text-slate-400">{lead.contactEmails[0]}</p>
-                <div className="flex justify-between items-center mt-1">
-                  <span className="text-[9px] bg-slate-800 px-1.5 py-0.5 rounded uppercase font-bold text-slate-400">
-                    {lead.niche}
-                  </span>
-                  <span className="text-[9px] text-emerald-400 flex items-center gap-0.5">
-                    <Sparkles className="w-2.5 h-2.5" /> AI Ready
-                  </span>
-                </div>
+                <Sparkles className={`w-3 h-3 ${autoApproveQueue ? 'animate-pulse text-emerald-400' : ''}`} />
+                {autoApproveQueue ? 'AUTO-APPROVE: ON' : 'AUTO-APPROVE: OFF'}
               </button>
-            ))}
-            {leads.filter(l => l.status === 'new').length === 0 && (
-              <div className="text-center text-xs text-slate-600 py-12">No pending manual approvals. All leads processed!</div>
+            </div>
+
+            {/* Bulk Selection / Actions Bar */}
+            {leads.filter(l => l.status === 'new').length > 0 && (
+              <div className="flex justify-between items-center bg-slate-950 p-2 border border-slate-800/80 rounded-lg gap-2 text-left">
+                <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={
+                      leads.filter(l => l.status === 'new').length > 0 &&
+                      leads.filter(l => l.status === 'new').every(l => selectedQueueLeadIds.includes(l.id))
+                    }
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedQueueLeadIds(leads.filter(l => l.status === 'new').map(l => l.id));
+                      } else {
+                        setSelectedQueueLeadIds([]);
+                      }
+                    }}
+                    className="rounded bg-slate-900 border-slate-800 text-emerald-500 focus:ring-0 cursor-pointer"
+                  />
+                  <span>Select All</span>
+                </label>
+                
+                {selectedQueueLeadIds.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const activeCampaign = campaigns[0];
+                      if (!activeCampaign) {
+                        alert('Please create a campaign sequence first under the campaigns tab!');
+                        return;
+                      }
+                      if (confirm(`Are you sure you want to approve and send emails to ${selectedQueueLeadIds.length} selected prospects?`)) {
+                        let successCount = 0;
+                        for (const id of selectedQueueLeadIds) {
+                          try {
+                            await sendCampaignImmediate(activeCampaign.id, id);
+                            successCount++;
+                          } catch (err) {
+                            console.error(`Bulk sending failed for lead ID ${id}:`, err);
+                          }
+                        }
+                        setSelectedQueueLeadIds([]);
+                        alert(`Successfully processed and sent emails to ${successCount} prospect(s)!`);
+                      }
+                    }}
+                    className="px-2.5 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-sans font-bold text-[10px] uppercase tracking-wider rounded-lg transition-colors cursor-pointer"
+                  >
+                    Send Selected ({selectedQueueLeadIds.length})
+                  </button>
+                )}
+              </div>
             )}
+
+            {/* List */}
+            <div className="space-y-2 flex-1 overflow-y-auto">
+              {leads.filter(l => l.status === 'new').map((lead) => {
+                const isChecked = selectedQueueLeadIds.includes(lead.id);
+                return (
+                  <div
+                    key={lead.id}
+                    className={`p-3 rounded-lg border transition-all flex items-start gap-2 text-left ${
+                      previewLeadId === lead.id
+                        ? 'bg-slate-800 border-emerald-500/50 text-white'
+                        : 'bg-slate-950 border-slate-800 text-slate-300 hover:bg-slate-900/40'
+                    }`}
+                  >
+                    {/* Multi-select Checkbox */}
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={() => {
+                        if (isChecked) {
+                          setSelectedQueueLeadIds(selectedQueueLeadIds.filter(id => id !== lead.id));
+                        } else {
+                          setSelectedQueueLeadIds([...selectedQueueLeadIds, lead.id]);
+                        }
+                      }}
+                      className="rounded bg-slate-900 border-slate-800 text-emerald-500 focus:ring-0 mt-1 cursor-pointer"
+                    />
+                    
+                    {/* Remaining clickable card body */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPreviewLeadId(lead.id);
+                        setPreviewStepIdx(0);
+                      }}
+                      className="flex-1 text-left"
+                    >
+                      <p className="text-xs font-semibold">{lead.name}</p>
+                      <p className="text-[10px] font-mono text-slate-400">{lead.contactEmails[0]}</p>
+                      <div className="flex justify-between items-center mt-1">
+                        <span className="text-[9px] bg-slate-850 px-1.5 py-0.5 rounded uppercase font-bold text-slate-400">
+                          {lead.niche}
+                        </span>
+                        <span className="text-[9px] text-emerald-400 flex items-center gap-0.5">
+                          <Sparkles className="w-2.5 h-2.5 animate-pulse" /> AI Ready
+                        </span>
+                      </div>
+                    </button>
+                  </div>
+                );
+              })}
+              {leads.filter(l => l.status === 'new').length === 0 && (
+                <div className="text-center text-xs text-slate-600 py-12">No pending manual approvals. All leads processed!</div>
+              )}
+            </div>
           </div>
 
           {/* Interactive Personalized Preview Panel */}

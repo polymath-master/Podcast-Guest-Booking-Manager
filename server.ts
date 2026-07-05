@@ -5,6 +5,7 @@
 
 import express from 'express';
 import path from 'path';
+import cron from 'node-cron';
 import { createServer as createViteServer } from 'vite';
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
@@ -529,6 +530,7 @@ const refreshAccessToken = async (account: any) => {
 
 // Google OAuth Helpers
 const activeUserTokens = new Map<string, string>();
+const tokenToEmailCache = new Map<string, string>();
 
 const getOAuth2Client = (authHeader?: string) => {
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -540,13 +542,25 @@ const getOAuth2Client = (authHeader?: string) => {
   return oauth2Client;
 };
 
-const getUserEmail = async (authHeader?: string): Promise<string> => {
+const getUserEmail = async (authHeader?: string, userEmailHeader?: string): Promise<string> => {
+  if (userEmailHeader && userEmailHeader !== 'unknown_user') {
+    if (authHeader) {
+      tokenToEmailCache.set(authHeader, userEmailHeader);
+    }
+    return userEmailHeader;
+  }
+
+  if (authHeader && tokenToEmailCache.has(authHeader)) {
+    return tokenToEmailCache.get(authHeader)!;
+  }
+
   try {
     const client = getOAuth2Client(authHeader);
     const oauth2 = google.oauth2({ version: 'v2', auth: client });
     const userInfo = await oauth2.userinfo.get();
     const email = userInfo.data.email || 'unknown_user';
     if (email !== 'unknown_user' && authHeader) {
+      tokenToEmailCache.set(authHeader, email);
       activeUserTokens.set(email, authHeader);
       try {
         await saveDocument('user_tokens', {
@@ -568,10 +582,22 @@ const getUserEmail = async (authHeader?: string): Promise<string> => {
 
 // API ROUTES
 
+app.get('/api/db-status', async (req, res) => {
+  try {
+    res.json({
+      firestoreConnected: db !== null,
+      localDbExists: fs.existsSync(mockDbPath),
+      envProjectId: process.env.GOOGLE_CLOUD_PROJECT || 'not set'
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // AI Settings Endpoints
 app.get('/api/settings', async (req, res) => {
   try {
-    const userId = await getUserEmail(req.headers.authorization);
+    const userId = await getUserEmail(req.headers.authorization, req.headers['x-user-email'] as string);
     const settings = await getSettings(userId);
     res.json(settings);
   } catch (error: any) {
@@ -913,7 +939,7 @@ Return a structured JSON with two fields:
 
 app.post('/api/settings', async (req, res) => {
   try {
-    const userId = await getUserEmail(req.headers.authorization);
+    const userId = await getUserEmail(req.headers.authorization, req.headers['x-user-email'] as string);
     const settingsData = req.body;
     const settings: AppSettings = {
       ...settingsData,
@@ -931,7 +957,7 @@ app.post('/api/settings', async (req, res) => {
 // 1. Leads CRUD
 app.get('/api/leads', async (req, res) => {
   try {
-    const userId = await getUserEmail(req.headers.authorization);
+    const userId = await getUserEmail(req.headers.authorization, req.headers['x-user-email'] as string);
     const leads = await getDocuments<Lead>('leads', userId);
     res.json(leads);
   } catch (error: any) {
@@ -941,7 +967,7 @@ app.get('/api/leads', async (req, res) => {
 
 app.post('/api/leads', async (req, res) => {
   try {
-    const userId = await getUserEmail(req.headers.authorization);
+    const userId = await getUserEmail(req.headers.authorization, req.headers['x-user-email'] as string);
     const leadData = req.body;
     const lead: Lead = {
       ...leadData,
@@ -1073,7 +1099,7 @@ Text:
 // 3. Campaigns API
 app.get('/api/campaigns', async (req, res) => {
   try {
-    const userId = await getUserEmail(req.headers.authorization);
+    const userId = await getUserEmail(req.headers.authorization, req.headers['x-user-email'] as string);
     const campaigns = await getDocuments<Campaign>('campaigns', userId);
     res.json(campaigns);
   } catch (error: any) {
@@ -1083,7 +1109,7 @@ app.get('/api/campaigns', async (req, res) => {
 
 app.post('/api/campaigns', async (req, res) => {
   try {
-    const userId = await getUserEmail(req.headers.authorization);
+    const userId = await getUserEmail(req.headers.authorization, req.headers['x-user-email'] as string);
     const campaignData = req.body;
     const campaign: Campaign = {
       ...campaignData,
@@ -1248,6 +1274,26 @@ app.post('/api/campaigns/:id/test-send', async (req, res) => {
   } catch (error: any) {
     console.error('Campaign test send failed:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Google Cloud Scheduler Endpoint
+app.post('/api/scheduler/trigger', async (req, res) => {
+  try {
+    console.log('[Cloud Scheduler] Received cron trigger. Executing runCampaignEngine...');
+    const secretToken = process.env.SCHEDULER_SECRET;
+    const clientToken = req.headers['x-scheduler-secret'] || req.query.secret;
+    if (secretToken && clientToken !== secretToken) {
+      console.warn('[Cloud Scheduler] Warning: unauthorized trigger attempt.');
+      return res.status(401).json({ error: 'Unauthorized scheduler token' });
+    }
+    
+    // Call the campaign sender loop
+    await runCampaignEngine();
+    res.json({ success: true, message: 'Campaign engine triggered successfully via Google Scheduler API.' });
+  } catch (err: any) {
+    console.error('[Cloud Scheduler] Error running campaign trigger:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -2492,7 +2538,7 @@ const runCampaignEngine = async (specificCampaignId?: string) => {
       const connectedAccounts = await getDocuments<any>('connected_accounts', userId);
 
       for (const campaign of activeCampaigns) {
-        const { id: campaignId, steps, leadIds } = campaign;
+        const { id: campaignId, steps, leadIds, excludedLeadIds } = campaign;
         if (!steps || steps.length === 0) continue;
 
         // Resolve targeted leads via segments or individual list
@@ -2500,9 +2546,30 @@ const runCampaignEngine = async (specificCampaignId?: string) => {
         if (campaign.targetSegments) {
           const { tags, niches, roles } = campaign.targetSegments;
           targetedLeads = leads.filter(l => {
-            const roleMatch = !roles || roles.length === 0 || (l.role && roles.includes(l.role));
-            const nicheMatch = !niches || niches.length === 0 || (l.niche && niches.includes(l.niche));
-            const tagMatch = !tags || tags.length === 0 || (l.tags && l.tags.some(t => tags.includes(t)));
+            // Respect manual exclusions even in segment mode
+            if (excludedLeadIds && excludedLeadIds.includes(l.id)) {
+              return false;
+            }
+
+            const roleMatch = !roles || roles.length === 0 || (
+              l.role && roles.some(r => r.toLowerCase() === l.role?.toLowerCase())
+            );
+            const nicheMatch = !niches || niches.length === 0 || (
+              l.niche && niches.some(n => n.toLowerCase() === l.niche?.toLowerCase())
+            );
+            
+            let leadTags: string[] = [];
+            const rawTags = (l as any).tags;
+            if (Array.isArray(rawTags)) {
+              leadTags = rawTags;
+            } else if (typeof rawTags === 'string' && rawTags) {
+              leadTags = rawTags.split(',').map((t: string) => t.trim()).filter(Boolean);
+            }
+
+            const tagMatch = !tags || tags.length === 0 || (
+              leadTags.length > 0 && leadTags.some(t => tags.some(sel => sel.toLowerCase() === t.toLowerCase()))
+            );
+
             return roleMatch && nicheMatch && tagMatch;
           });
         } else {
@@ -2813,9 +2880,21 @@ const startServer = async () => {
     console.log(`Express server running on http://localhost:${PORT}`);
   });
 
-  // Run the Campaign Engine background loop 7/24 hours every 15 seconds
-  setInterval(runCampaignEngine, 15000);
-  console.log('[SYSTEM ENGINE] 24/7 continuous Automated Campaign Engine is running.');
+  // Run the Campaign Engine production-grade background worker every minute using node-cron
+  cron.schedule('* * * * *', async () => {
+    console.log('[SYSTEM ENGINE] cron tick: checking for due campaigns...');
+    try {
+      await runCampaignEngine();
+    } catch (err) {
+      console.error('[SYSTEM ENGINE] Error in scheduled campaign engine task:', err);
+    }
+  });
+  console.log('[SYSTEM ENGINE] Production-grade persistent Campaign Scheduler started (node-cron running * * * * *)');
+
+  // Run once immediately on startup to process any campaigns pending right away
+  runCampaignEngine().catch(err => {
+    console.error('[SYSTEM ENGINE] Error during initial campaign engine run on startup:', err);
+  });
 };
 
 startServer();

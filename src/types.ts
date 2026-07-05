@@ -59,6 +59,7 @@ export interface Campaign {
     niches?: string[];
     roles?: ('guest' | 'host')[];
   };
+  excludedLeadIds?: string[];
 
   // New Timezone-based Scheduling
   timezone?: string; // e.g. "America/New_York", "Europe/London", "UTC", "Prospect's Local"

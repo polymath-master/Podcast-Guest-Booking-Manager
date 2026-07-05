@@ -100,8 +100,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setUser(currentUser);
         // Firebase idToken or Google OAuth accessToken?
         // We need Google OAuth accessToken which is fetched at login.
-        // We'll restore from session-level in-memory cache if available.
-        const storedToken = sessionStorage.getItem('g_oauth_token');
+        // We'll restore from session-level or local-level cache if available.
+        const storedToken = localStorage.getItem('g_oauth_token');
         if (storedToken) {
           setToken(storedToken);
           setNeedsAuth(false);
@@ -113,7 +113,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setUser(null);
         setToken(null);
         setNeedsAuth(true);
-        sessionStorage.removeItem('g_oauth_token');
+        localStorage.removeItem('g_oauth_token');
       }
       setLoading(false);
     });
@@ -125,7 +125,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const refreshData = async () => {
     if (!token) return;
     try {
-      const headers = { Authorization: `Bearer ${token}` };
+      const headers = { 
+        Authorization: `Bearer ${token}`,
+        ...(user?.email ? { 'X-User-Email': user.email } : {})
+      };
 
       const [leadsRes, campaignsRes, outreachRes, calendarRes, logsRes, settingsRes, templatesRes, clientsRes, accountsRes] = await Promise.all([
         fetch('/api/leads', { headers }),
@@ -158,7 +161,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const headers = {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`
+        Authorization: `Bearer ${token}`,
+        ...(user?.email ? { 'X-User-Email': user.email } : {})
       };
       const res = await fetch('/api/settings', {
         method: 'POST',
@@ -207,7 +211,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const credential = GoogleAuthProvider.credentialFromResult(result);
       if (credential?.accessToken) {
         setToken(credential.accessToken);
-        sessionStorage.setItem('g_oauth_token', credential.accessToken);
+        localStorage.setItem('g_oauth_token', credential.accessToken);
         setNeedsAuth(false);
       }
     } catch (error) {
@@ -221,7 +225,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       await signOut(auth);
       setToken(null);
-      sessionStorage.removeItem('g_oauth_token');
+      localStorage.removeItem('g_oauth_token');
       setNeedsAuth(true);
     } catch (error) {
       console.error('Logout error:', error);
@@ -235,7 +239,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       method,
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
+        'Authorization': `Bearer ${token}`,
+        ...(user?.email ? { 'X-User-Email': user.email } : {})
       },
       body: body ? JSON.stringify(body) : undefined
     });

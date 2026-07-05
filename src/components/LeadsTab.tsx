@@ -67,6 +67,7 @@ export const LeadsTab: React.FC = () => {
   const [editPriority, setEditPriority] = useState<'high' | 'medium' | 'low'>('medium');
   const [editStatus, setEditStatus] = useState<'new' | 'outreached' | 'replied' | 'booked' | 'declined'>('new');
   const [editRole, setEditRole] = useState<'guest' | 'host'>('guest');
+  const [editTagsRaw, setEditTagsRaw] = useState('');
 
   const startEditing = (lead: Lead) => {
     setEditingLead(lead);
@@ -81,6 +82,7 @@ export const LeadsTab: React.FC = () => {
     setEditPriority(lead.priority || 'medium');
     setEditStatus(lead.status || 'new');
     setEditRole(lead.role || 'guest');
+    setEditTagsRaw((lead.tags || []).join(', '));
   };
 
   // Manual Form State
@@ -95,6 +97,7 @@ export const LeadsTab: React.FC = () => {
   const [requirements, setRequirements] = useState('');
   const [priority, setPriority] = useState<'high' | 'medium' | 'low'>('medium');
   const [role, setRole] = useState<'guest' | 'host'>('guest');
+  const [tagsRaw, setTagsRaw] = useState('');
 
   // Text Parsing State
   const [rawText, setRawText] = useState('');
@@ -297,6 +300,7 @@ export const LeadsTab: React.FC = () => {
 
     const emails = emailsRaw.split(/[,;\s]+/).map(e => e.trim()).filter(e => e.includes('@'));
     const topics = topicsRaw.split('\n').map(t => t.trim()).filter(Boolean);
+    const tags = tagsRaw.split(/[,;]+/).map(t => t.trim()).filter(Boolean);
 
     await createLead({
       name,
@@ -309,6 +313,7 @@ export const LeadsTab: React.FC = () => {
       requirements,
       priority,
       role,
+      tags,
       source: 'manual',
       sourceName: 'Manual Entry',
       status: 'new'
@@ -325,13 +330,21 @@ export const LeadsTab: React.FC = () => {
     setRequirements('');
     setPriority('medium');
     setRole('guest');
+    setTagsRaw('');
     setShowAddForm(false);
   };
 
   // Tag modifiers
-  const handleAddTag = async (leadId: string, leadTags: string[] = []) => {
+  const handleAddTag = async (leadId: string, rawLeadTags: any) => {
     const inputTag = tagInputs[leadId]?.trim();
     if (!inputTag) return;
+
+    let leadTags: string[] = [];
+    if (Array.isArray(rawLeadTags)) {
+      leadTags = rawLeadTags;
+    } else if (typeof rawLeadTags === 'string' && rawLeadTags) {
+      leadTags = rawLeadTags.split(',').map(t => t.trim()).filter(Boolean);
+    }
 
     const updatedTags = [...new Set([...leadTags, inputTag])];
     await updateLead(leadId, { tags: updatedTags });
@@ -339,13 +352,26 @@ export const LeadsTab: React.FC = () => {
     setTagInputs(prev => ({ ...prev, [leadId]: '' }));
   };
 
-  const handleRemoveTag = async (leadId: string, tagToRemove: string, leadTags: string[] = []) => {
+  const handleRemoveTag = async (leadId: string, tagToRemove: string, rawLeadTags: any) => {
+    let leadTags: string[] = [];
+    if (Array.isArray(rawLeadTags)) {
+      leadTags = rawLeadTags;
+    } else if (typeof rawLeadTags === 'string' && rawLeadTags) {
+      leadTags = rawLeadTags.split(',').map(t => t.trim()).filter(Boolean);
+    }
     const updatedTags = leadTags.filter(t => t !== tagToRemove);
     await updateLead(leadId, { tags: updatedTags });
   };
 
   // Filter and Search Pipeline
   const filteredLeads = leads.filter(l => {
+    let leadTags: string[] = [];
+    if (Array.isArray(l.tags)) {
+      leadTags = l.tags;
+    } else if (typeof l.tags === 'string' && l.tags) {
+      leadTags = l.tags.split(',').map(t => t.trim()).filter(Boolean);
+    }
+
     // Search Term match
     const searchMatch = searchTerm
       ? l.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -353,7 +379,7 @@ export const LeadsTab: React.FC = () => {
         l.status.toLowerCase().includes(searchTerm.toLowerCase()) ||
         l.bio?.toLowerCase().includes(searchTerm.toLowerCase()) ||
         l.niche?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        l.tags?.some(t => t.toLowerCase().includes(searchTerm.toLowerCase()))
+        leadTags.some(t => t.toLowerCase().includes(searchTerm.toLowerCase()))
       : true;
 
     // Status match
@@ -775,7 +801,7 @@ export const LeadsTab: React.FC = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
             <div className="space-y-1">
               <label className="text-xs font-medium text-slate-300">Niche Category</label>
               <input
@@ -815,6 +841,16 @@ export const LeadsTab: React.FC = () => {
                 value={requirements}
                 onChange={(e) => setRequirements(e.target.value)}
                 placeholder="Thursdays only, booked via PR..."
+                className="w-full bg-slate-950 text-slate-100 border border-slate-800 rounded-lg p-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-slate-300">Tags (comma-separated)</label>
+              <input
+                type="text"
+                value={tagsRaw}
+                onChange={(e) => setTagsRaw(e.target.value)}
+                placeholder="Fintech, SaaS, AI"
                 className="w-full bg-slate-950 text-slate-100 border border-slate-800 rounded-lg p-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
               />
             </div>
@@ -967,24 +1003,34 @@ export const LeadsTab: React.FC = () => {
                   <td className="p-4 max-w-xs">
                     <div className="space-y-2">
                       <div className="flex flex-wrap gap-1">
-                        {(lead.tags || []).map((t, idx) => (
-                          <span
-                            key={idx}
-                            className="bg-slate-950 text-slate-300 border border-slate-800 px-1.5 py-0.5 rounded text-[10px] flex items-center gap-1 font-medium font-sans hover:border-slate-600 transition-colors"
-                          >
-                            <Tag className="w-2.5 h-2.5 text-emerald-400" />
-                            {t}
-                            <button
-                              onClick={() => handleRemoveTag(lead.id, t, lead.tags)}
-                              className="text-slate-500 hover:text-red-400 shrink-0 ml-0.5"
+                        {(() => {
+                          let leadTags: string[] = [];
+                          if (Array.isArray(lead.tags)) leadTags = lead.tags;
+                          else if (typeof lead.tags === 'string' && lead.tags) leadTags = lead.tags.split(',').map(t => t.trim()).filter(Boolean);
+                          return leadTags.map((t, idx) => (
+                            <span
+                              key={idx}
+                              className="bg-slate-950 text-slate-300 border border-slate-800 px-1.5 py-0.5 rounded text-[10px] flex items-center gap-1 font-medium font-sans hover:border-slate-600 transition-colors"
                             >
-                              <X className="w-2.5 h-2.5" />
-                            </button>
-                          </span>
-                        ))}
-                        {(lead.tags || []).length === 0 && (
-                          <span className="text-[10px] text-slate-600 italic">No labels</span>
-                        )}
+                              <Tag className="w-2.5 h-2.5 text-emerald-400" />
+                              {t}
+                              <button
+                                onClick={() => handleRemoveTag(lead.id, t, lead.tags)}
+                                className="text-slate-500 hover:text-red-400 shrink-0 ml-0.5"
+                              >
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                            </span>
+                          ));
+                        })()}
+                        {(() => {
+                          let leadTags: string[] = [];
+                          if (Array.isArray(lead.tags)) leadTags = lead.tags;
+                          else if (typeof lead.tags === 'string' && lead.tags) leadTags = lead.tags.split(',').map(t => t.trim()).filter(Boolean);
+                          return leadTags.length === 0 ? (
+                            <span className="text-[10px] text-slate-600 italic">No labels</span>
+                          ) : null;
+                        })()}
                       </div>
                       
                       {/* Tag Inserter */}
@@ -1165,6 +1211,7 @@ export const LeadsTab: React.FC = () => {
 
                 const emails = editEmailsRaw.split(/[,;\s]+/).map(em => em.trim()).filter(em => em.includes('@'));
                 const topics = editTopicsRaw.split('\n').map(t => t.trim()).filter(Boolean);
+                const tags = editTagsRaw.split(/[,;]+/).map(t => t.trim()).filter(Boolean);
 
                 await updateLead(editingLead.id, {
                   name: editName,
@@ -1177,7 +1224,8 @@ export const LeadsTab: React.FC = () => {
                   requirements: editRequirements,
                   priority: editPriority,
                   status: editStatus,
-                  role: editRole
+                  role: editRole,
+                  tags
                 });
 
                 setEditingLead(null);
@@ -1305,6 +1353,17 @@ export const LeadsTab: React.FC = () => {
                   type="text"
                   value={editRequirements}
                   onChange={(e) => setEditRequirements(e.target.value)}
+                  className="w-full bg-slate-950 text-slate-100 border border-slate-800 rounded-lg p-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-slate-300">Tags (comma-separated)</label>
+                <input
+                  type="text"
+                  value={editTagsRaw}
+                  onChange={(e) => setEditTagsRaw(e.target.value)}
+                  placeholder="Fintech, SaaS, AI"
                   className="w-full bg-slate-950 text-slate-100 border border-slate-800 rounded-lg p-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
                 />
               </div>
