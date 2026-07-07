@@ -1277,26 +1277,6 @@ app.post('/api/campaigns/:id/test-send', async (req, res) => {
   }
 });
 
-// Google Cloud Scheduler Endpoint
-app.post('/api/scheduler/trigger', async (req, res) => {
-  try {
-    console.log('[Cloud Scheduler] Received cron trigger. Executing runCampaignEngine...');
-    const secretToken = process.env.SCHEDULER_SECRET;
-    const clientToken = req.headers['x-scheduler-secret'] || req.query.secret;
-    if (secretToken && clientToken !== secretToken) {
-      console.warn('[Cloud Scheduler] Warning: unauthorized trigger attempt.');
-      return res.status(401).json({ error: 'Unauthorized scheduler token' });
-    }
-    
-    // Call the campaign sender loop
-    await runCampaignEngine();
-    res.json({ success: true, message: 'Campaign engine triggered successfully via Google Scheduler API.' });
-  } catch (err: any) {
-    console.error('[Cloud Scheduler] Error running campaign trigger:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // Clients API
 app.get('/api/clients', async (req, res) => {
   try {
