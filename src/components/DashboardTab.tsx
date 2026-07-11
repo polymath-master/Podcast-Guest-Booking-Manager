@@ -10,6 +10,21 @@ import { Users, MailOpen, Calendar, CheckCircle2, CloudLightning, ShieldAlert, F
 export const DashboardTab: React.FC = () => {
   const { leads, campaigns, outreachStates, calendarEvents, logs } = useApp();
 
+  const [dbStatus, setDbStatus] = React.useState<{
+    supabaseConnected: boolean;
+    supabaseTableExists: boolean;
+    supabaseConfigured: boolean;
+    localDbExists: boolean;
+    errorDetails: string | null;
+  } | null>(null);
+
+  React.useEffect(() => {
+    fetch('/api/db-status')
+      .then(res => res.json())
+      .then(data => setDbStatus(data))
+      .catch(err => console.error('Error fetching db status:', err));
+  }, []);
+
   // Metrics calculation
   const totalLeads = leads.length;
   const totalCampaigns = campaigns.length;
@@ -174,10 +189,60 @@ export const DashboardTab: React.FC = () => {
               ))}
             </div>
           </div>
-          <div className="pt-4 border-t border-slate-800">
-            <p className="text-[10px] font-mono text-slate-400">
-              Multi-Tenant DB ID: <span className="text-emerald-400">gothic-bulwark-2k8sk</span>
-            </p>
+          <div className="pt-4 border-t border-slate-800 space-y-4">
+            <p className="text-xs font-semibold text-slate-200">Database Engine</p>
+            {dbStatus ? (
+              <div className="space-y-3 text-[10px] font-mono">
+                {dbStatus.supabaseConfigured ? (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-400">Supabase Connected:</span>
+                      <span className={dbStatus.supabaseConnected ? "text-emerald-400" : "text-rose-400"}>
+                        {dbStatus.supabaseConnected ? "Active" : "Failed"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-400">'documents' Table:</span>
+                      <span className={dbStatus.supabaseTableExists ? "text-emerald-400" : "text-rose-400"}>
+                        {dbStatus.supabaseTableExists ? "Ready" : "Missing Schema"}
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-amber-400 bg-amber-500/10 border border-amber-500/20 p-3 rounded-lg text-xs space-y-2">
+                    <p className="font-semibold">⚠️ Supabase Credentials Missing</p>
+                    <p className="text-[10px] text-slate-400 leading-normal">
+                      Add <code className="text-amber-200 font-bold font-mono">SUPABASE_URL</code> and <code className="text-amber-200 font-bold font-mono">SUPABASE_SERVICE_ROLE_KEY</code> to your secrets.
+                    </p>
+                  </div>
+                )}
+                {dbStatus.supabaseConfigured && !dbStatus.supabaseTableExists && (
+                  <div className="text-rose-400 bg-rose-500/10 border border-rose-500/20 p-3 rounded-lg text-xs space-y-2">
+                    <p className="font-semibold">⚠️ Table Required</p>
+                    <p className="text-[10px] text-slate-400 leading-normal">
+                      Please run this SQL query in your Supabase SQL Editor to create the tables:
+                    </p>
+                    <pre className="text-[9px] bg-slate-950 p-2 rounded-lg overflow-x-auto text-rose-200 leading-tight">
+{`CREATE TABLE documents (
+  id TEXT PRIMARY KEY,
+  collection TEXT NOT NULL,
+  user_id TEXT,
+  data JSONB NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX idx_documents_col_user ON documents(collection, user_id);`}
+                    </pre>
+                  </div>
+                )}
+                <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+                  <span className="text-slate-400">Local DB Cache:</span>
+                  <span className="text-emerald-400">Active Fallback</span>
+                </div>
+              </div>
+            ) : (
+              <p className="text-[10px] font-mono text-slate-500 animate-pulse">Loading DB status...</p>
+            )}
           </div>
         </div>
       </div>

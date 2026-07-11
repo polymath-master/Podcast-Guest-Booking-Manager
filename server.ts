@@ -14,6 +14,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import * as fs from 'fs';
 import * as XLSX from 'xlsx';
 import crypto from 'crypto';
+import { createClient } from '@supabase/supabase-js';
 import { Lead, Campaign, OutreachState, CalendarSyncEvent, AuditLog, AppSettings, PitchTemplate, Client } from './src/types';
 
 // Initialize Express App
@@ -319,8 +320,7 @@ Return a JSON array of the parsed Lead objects under the "leads" key.`;
 }
 
 
-// Resilient Firebase Admin configuration
-let db: any = null;
+// Resilient Supabase configuration with local JSON fallback
 const mockDbPath = path.join(process.cwd(), 'local-db');
 
 // Ensure mock db path exists
@@ -353,56 +353,200 @@ const writeMockCollection = <T>(collection: string, data: T[]) => {
   }
 };
 
-// Initialize Firebase Admin securely
-try {
-  let firestoreDbId: string | undefined = undefined;
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+let supabase: any = null;
+
+if (supabaseUrl && supabaseServiceKey) {
   try {
-    const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
-    if (fs.existsSync(configPath)) {
-      const configData = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      if (configData && configData.firestoreDatabaseId) {
-        firestoreDbId = configData.firestoreDatabaseId;
+    supabase = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
       }
-    }
-  } catch (configError) {
-    console.warn('Could not read firebase-applet-config.json for database ID:', configError);
+    });
+    console.log('Supabase Client initialized successfully.');
+  } catch (err: any) {
+    console.error('Failed to initialize Supabase Client:', err.message);
   }
-
-  // If credential environment is available (Cloud Run automatically handles this)
-  const appInstance = admin.initializeApp({
-    projectId: 'gothic-bulwark-2k8sk'
-  });
-
-  if (firestoreDbId) {
-    db = getFirestore(appInstance, firestoreDbId);
-    console.log(`Firebase Admin connected successfully to gothic-bulwark-2k8sk. Database: ${firestoreDbId}`);
-  } else {
-    db = getFirestore();
-    console.log('Firebase Admin connected successfully to gothic-bulwark-2k8sk (default database).');
-  }
-} catch (error: any) {
-  console.warn('Firebase Admin failed to initialize. Falling back to local file-based database. Error:', error.message);
-  db = null;
+} else {
+  console.warn('Supabase URL or Service Role Key is missing. Falling back to local file-based database.');
 }
 
-// Database helper functions supporting both Firestore and Local Mock Fallback
+const seedSupabaseIfEmpty = async () => {
+  if (!supabase) return;
+  try {
+    const { count, error } = await supabase
+      .from('documents')
+      .select('*', { count: 'exact', head: true });
+      
+    if (error) {
+      if (error.code === '42P01') {
+        console.warn('[SEED] documents table does not exist yet. Skipping seed.');
+      } else {
+        console.error('[SEED] Error checking if documents table is empty:', error);
+      }
+      return;
+    }
+    
+    if (count === 0) {
+      console.log('[SEED] Supabase database is empty. Seeding elegant default workspace data...');
+      
+      const defaultUserId = 'rahmanshuvo.4360@gmail.com';
+      
+      // 1. App Settings
+      const defaultSettings = {
+        id: 'settings_default',
+        userId: defaultUserId,
+        companyName: 'AI Studio Ventures',
+        senderName: 'PR Relations Team',
+        signature: 'Warm regards,\nPR & Podcast Sourcing Team',
+        autoApproveQueue: false,
+        dailyMaxEmails: 50,
+        preferredTime: '09:00',
+        timezone: 'Asia/Dhaka'
+      };
+      await saveDocument('settings', defaultSettings);
+
+      // 2. Clients
+      const client1 = {
+        id: 'client_1',
+        userId: defaultUserId,
+        name: 'Sarah Jenkins',
+        website: 'https://sarahdevs.io',
+        niche: 'AI & Software Engineering',
+        podcastName: 'CodeCraft Podcast',
+        description: 'Sarah is an AI developer and SaaS founder building next-generation productivity tools. She speaks on the practical application of modern large language models, startup scaling, and cloud architectures.',
+        tags: ['Founder', 'AI Engineer', 'SaaS', 'Cloud Architect'],
+        createdAt: new Date().toISOString()
+      };
+      await saveDocument('clients', client1);
+
+      // 3. Pitch Templates
+      const template1 = {
+        id: 'template_1',
+        userId: defaultUserId,
+        title: 'Premium Founder Booking Pitch',
+        subject: 'Collaboration: Sarah Jenkins (SaaS Founder) on {{podcast_name}}',
+        bodyTemplate: 'Hi {{name}},\n\nI hope you are doing well!\n\nI have been following {{podcast_name}} and love your recent episodes on technology development. I wanted to pitch Sarah Jenkins as a potential guest.\n\nSarah is an AI developer and the founder of several high-growth productivity products. She can share unique insights on:\n- {{topics}}\n- Practical scaling of AI systems in 2026\n\nWould you be open to a quick chat about booking Sarah for a future episode?\n\nBest,\nPR Team',
+        category: 'pitch',
+        createdAt: new Date().toISOString()
+      };
+      await saveDocument('templates', template1);
+
+      // 4. Campaigns
+      const campaign1 = {
+        id: 'campaign_1',
+        userId: defaultUserId,
+        title: 'Tech & SaaS Sourcing Campaign',
+        description: 'Targeting prominent software engineering and artificial intelligence shows.',
+        clientId: 'client_1',
+        templateId: 'template_1',
+        status: 'active',
+        senderEmail: 'primary.outreach@gmail.com',
+        timezone: 'Asia/Dhaka',
+        preferredTime: '09:00',
+        steps: [
+          {
+            id: 'step_1',
+            subject: 'Collaboration: Sarah Jenkins on {{podcast_name}}',
+            bodyTemplate: 'Hi {{name}},\n\nI hope you are doing well!\n\nI have been following {{podcast_name}} and love your recent episodes on technology development. I wanted to pitch Sarah Jenkins as a potential guest.\n\nSarah is an AI developer and the founder of several high-growth productivity products. She can share unique insights on:\n- {{topics}}\n- Practical scaling of AI systems in 2026\n\nWould you be open to a quick chat about booking Sarah for a future episode?\n\nBest,\nPR Team',
+            delayDays: 0
+          },
+          {
+            id: 'step_2',
+            subject: 'Quick follow up regarding Sarah Jenkins on {{podcast_name}}',
+            bodyTemplate: 'Hi {{name}},\n\nJust wanted to briefly follow up and see if you had any interest in booking Sarah Jenkins for {{podcast_name}}? She just launched a new feature that has been trending, and she has fantastic advice to share.\n\nLet me know if you would like more details!\n\nBest,\nPR Team',
+            delayDays: 3
+          }
+        ],
+        createdAt: new Date().toISOString()
+      };
+      await saveDocument('campaigns', campaign1);
+
+      // 5. Leads
+      const lead1 = {
+        id: 'lead_1',
+        userId: defaultUserId,
+        name: 'Alex Rivera',
+        organization: 'The Future of Tech Podcast',
+        contactEmails: ['alex.rivera@example.com'],
+        website: 'https://futureoftech.show',
+        bio: 'Alex Rivera hosts The Future of Tech Podcast, exploring how software, AI, and cloud technology shape business models.',
+        topics: ['AI agents', 'LLM optimization', 'SaaS trends'],
+        niche: 'Technology',
+        priority: 'high',
+        status: 'new',
+        tags: ['Podcast Host', 'Tech Influencer', 'SaaS Enthusiast'],
+        role: 'host',
+        source: 'manual',
+        createdAt: new Date().toISOString()
+      };
+      const lead2 = {
+        id: 'lead_2',
+        userId: defaultUserId,
+        name: 'Elena Rostova',
+        organization: 'SaaS Builder Collective',
+        contactEmails: ['elena@saasbuilders.net'],
+        website: 'https://saasbuilders.net',
+        bio: 'Elena hosts a weekly roundtable with SaaS developers sharing launch secrets and growth strategies.',
+        topics: ['Bootstrapping', 'Growth Loops', 'Developer Marketing'],
+        niche: 'Business',
+        priority: 'medium',
+        status: 'new',
+        tags: ['Developer Relations', 'Bootstrapper'],
+        role: 'host',
+        source: 'manual',
+        createdAt: new Date().toISOString()
+      };
+      await saveDocument('leads', lead1);
+      await saveDocument('leads', lead2);
+
+      // 6. Audit Log
+      await createAuditLog(defaultUserId, 'Database Initial Seeding', 'Successfully seeded default workspace records to Supabase.', 'system', 'info');
+      
+      console.log('[SEED] Supabase database seeded successfully.');
+    } else {
+      console.log(`[SEED] Supabase already has ${count} records. No seeding needed.`);
+    }
+  } catch (err: any) {
+    console.error('[SEED] Error seeding Supabase:', err.message);
+  }
+};
+
+// Database helper functions supporting both Supabase and Local Mock Fallback
 const getDocuments = async <T>(collection: string, userId: string): Promise<T[]> => {
   const sharedCollections = ['leads', 'clients', 'templates'];
   const isShared = sharedCollections.includes(collection);
 
-  if (db) {
+  if (supabase) {
     try {
-      let snapshot;
-      if (isShared) {
-        snapshot = await db.collection(collection).get();
-      } else {
-        snapshot = await db.collection(collection).where('userId', '==', userId).get();
+      let query = supabase
+        .from('documents')
+        .select('data')
+        .eq('collection', collection);
+        
+      if (!isShared) {
+        query = query.eq('user_id', userId);
       }
-      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any)) as T[];
+      
+      const { data, error } = await query;
+      
+      if (error) {
+        if (error.code === '42P01') {
+          console.warn(`Supabase table 'documents' does not exist yet. Please run the SQL schema in Supabase. Falling back to local db.`);
+        } else {
+          throw error;
+        }
+      } else if (data) {
+        return data.map((row: any) => row.data as T);
+      }
     } catch (error) {
-      console.error(`Firestore read error on ${collection}:`, error);
+      console.error(`Supabase read error on ${collection}:`, error);
     }
   }
+
   // Fallback
   const list = readMockCollection<T>(collection);
   if (isShared) {
@@ -412,14 +556,32 @@ const getDocuments = async <T>(collection: string, userId: string): Promise<T[]>
 };
 
 const saveDocument = async <T extends { id: string; userId: string }>(collection: string, doc: T): Promise<void> => {
-  if (db) {
+  if (supabase) {
     try {
-      await db.collection(collection).doc(doc.id).set(doc);
-      return;
+      const { error } = await supabase
+        .from('documents')
+        .upsert({
+          id: doc.id,
+          collection,
+          user_id: doc.userId || null,
+          data: doc,
+          updated_at: new Date().toISOString()
+        });
+        
+      if (error) {
+        if (error.code === '42P01') {
+          console.warn(`Supabase table 'documents' does not exist yet. Falling back to local db.`);
+        } else {
+          throw error;
+        }
+      } else {
+        return;
+      }
     } catch (error) {
-      console.error(`Firestore write error on ${collection}:`, error);
+      console.error(`Supabase write error on ${collection}:`, error);
     }
   }
+
   // Fallback
   const list = readMockCollection<T>(collection);
   const idx = list.findIndex((item: any) => item.id === doc.id);
@@ -435,14 +597,33 @@ const deleteDocument = async (collection: string, docId: string, userId: string)
   const sharedCollections = ['leads', 'clients', 'templates'];
   const isShared = sharedCollections.includes(collection);
 
-  if (db) {
+  if (supabase) {
     try {
-      await db.collection(collection).doc(docId).delete();
-      return;
+      let query = supabase
+        .from('documents')
+        .delete()
+        .eq('id', docId);
+        
+      if (!isShared) {
+        query = query.eq('user_id', userId);
+      }
+      
+      const { error } = await query;
+      
+      if (error) {
+        if (error.code === '42P01') {
+          console.warn(`Supabase table 'documents' does not exist yet. Falling back to local db.`);
+        } else {
+          throw error;
+        }
+      } else {
+        return;
+      }
     } catch (error) {
-      console.error(`Firestore delete error on ${collection}:`, error);
+      console.error(`Supabase delete error on ${collection}:`, error);
     }
   }
+
   // Fallback
   const list = readMockCollection<any>(collection);
   const filtered = list.filter((item: any) => {
@@ -584,10 +765,22 @@ const getUserEmail = async (authHeader?: string, userEmailHeader?: string): Prom
 
 app.get('/api/db-status', async (req, res) => {
   try {
+    let supabaseTableExists = false;
+    let errorDetails = null;
+    if (supabase) {
+      const { error } = await supabase.from('documents').select('id').limit(1);
+      if (!error) {
+        supabaseTableExists = true;
+      } else {
+        errorDetails = error.message;
+      }
+    }
     res.json({
-      firestoreConnected: db !== null,
+      supabaseConnected: supabase !== null,
+      supabaseTableExists,
+      supabaseConfigured: !!(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
       localDbExists: fs.existsSync(mockDbPath),
-      envProjectId: process.env.GOOGLE_CLOUD_PROJECT || 'not set'
+      errorDetails
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -2466,15 +2659,18 @@ const runCampaignEngine = async (specificCampaignId?: string) => {
   try {
     let userIds: string[] = [];
     if (specificCampaignId) {
-      if (db) {
+      if (supabase) {
         try {
-          const doc = await db.collection('campaigns').doc(specificCampaignId).get();
-          if (doc.exists) {
-            const data = doc.data();
-            if (data && data.userId) userIds = [data.userId];
+          const { data, error } = await supabase
+            .from('documents')
+            .select('user_id')
+            .eq('id', specificCampaignId)
+            .maybeSingle();
+          if (data && data.user_id) {
+            userIds = [data.user_id];
           }
         } catch (err) {
-          console.error(`Error loading campaign ${specificCampaignId} from Firestore:`, err);
+          console.error(`Error loading campaign ${specificCampaignId} from Supabase:`, err);
         }
       }
       if (userIds.length === 0) {
@@ -2490,17 +2686,21 @@ const runCampaignEngine = async (specificCampaignId?: string) => {
       }
     } else {
       // Scan all active campaign userIds
-      if (db) {
+      if (supabase) {
         try {
-          const snapshot = await db.collection('campaigns').where('status', '==', 'active').get();
-          const ids = new Set<string>();
-          snapshot.docs.forEach(doc => {
-            const data = doc.data();
-            if (data && data.userId) ids.add(data.userId);
-          });
-          userIds = Array.from(ids);
+          const { data, error } = await supabase
+            .from('documents')
+            .select('user_id')
+            .eq('collection', 'campaigns');
+          if (data) {
+            const ids = new Set<string>();
+            data.forEach((row: any) => {
+              if (row.user_id) ids.add(row.user_id);
+            });
+            userIds = Array.from(ids);
+          }
         } catch (err) {
-          console.error('Error scanning global campaign userIds:', err);
+          console.error('Error scanning global campaign userIds from Supabase:', err);
         }
       } else {
         try {
@@ -2882,6 +3082,12 @@ const startServer = async () => {
   console.log('[SYSTEM ENGINE] Production-grade persistent Campaign Scheduler started (node-cron running * * * * *)');
 
   // Run once immediately on startup to process any campaigns pending right away
+  try {
+    await seedSupabaseIfEmpty();
+  } catch (seedErr) {
+    console.error('[SYSTEM ENGINE] Error during initial database seed on startup:', seedErr);
+  }
+
   runCampaignEngine().catch(err => {
     console.error('[SYSTEM ENGINE] Error during initial campaign engine run on startup:', err);
   });
