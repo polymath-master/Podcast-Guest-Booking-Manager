@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { Plus, Mail, Clock, Eye, Check, AlertCircle, Play, Pause, ChevronDown, Sparkles, Loader2, Edit2, Trash2, FileText, Tag, X, Search } from 'lucide-react';
 import { Campaign, CampaignStep, Lead, PitchTemplate } from '../types';
@@ -138,14 +138,17 @@ export const CampaignsTab: React.FC = () => {
     localStorage.setItem('auto_approve_queue', String(autoApproveQueue));
   }, [autoApproveQueue]);
 
-  // Client-side background Auto-Approve loop
+  const isProcessingAutoApproveRef = useRef(false);
+
+  // Client-side background Auto-Approve loop with concurrency guard
   useEffect(() => {
-    if (autoApproveQueue) {
+    if (autoApproveQueue && !isProcessingAutoApproveRef.current) {
       const pendingLeads = leads.filter(l => l.status === 'new');
       if (pendingLeads.length > 0 && campaigns.length > 0) {
         const activeCampaign = campaigns[0];
         if (activeCampaign) {
           const runAutoApprove = async () => {
+            isProcessingAutoApproveRef.current = true;
             for (const lead of pendingLeads) {
               try {
                 await sendCampaignImmediate(activeCampaign.id, lead.id);
@@ -153,6 +156,7 @@ export const CampaignsTab: React.FC = () => {
                 console.error(`Auto-approve failed for ${lead.name}:`, err);
               }
             }
+            isProcessingAutoApproveRef.current = false;
           };
           runAutoApprove();
         }

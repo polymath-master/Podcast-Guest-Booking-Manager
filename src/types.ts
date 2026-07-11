@@ -149,6 +149,15 @@ export interface Client {
   rawInput?: string;
   tags?: string[];
   createdAt: string;
+  contactEmails?: string[];
+  socials?: {
+    twitter?: string;
+    linkedin?: string;
+    youtube?: string;
+    instagram?: string;
+    facebook?: string;
+  };
+  detailedInfo?: string;
 }
 
 export interface PitchTemplate {

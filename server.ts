@@ -1240,7 +1240,7 @@ app.post('/api/campaigns/:id/test-send', async (req, res) => {
         Sending to Test Address: ${testEmail}<br/>
         Simulating Lead: ${lead.name} (${lead.contactEmails[0] || 'no email'})
       </div>
-      ${replacePlaceholders(step.bodyTemplate)}
+      ${formatEmailBodyToHtml(replacePlaceholders(step.bodyTemplate))}
     `;
 
     const authHeader = req.headers.authorization;
@@ -1519,7 +1519,7 @@ app.post('/api/outreach/send-immediate', async (req, res) => {
     };
 
     const subject = replacePlaceholders(firstStep.subject);
-    const body = replacePlaceholders(firstStep.bodyTemplate);
+    const body = formatEmailBodyToHtml(replacePlaceholders(firstStep.bodyTemplate));
 
     // Send the actual email via the authorized Gmail client of the user
     const recipient = lead.contactEmails[0];
@@ -2362,13 +2362,23 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
+// Converts a plain-text email body (with newlines) into well-formed HTML keeping paragraphs/formation
+const formatEmailBodyToHtml = (body: string): string => {
+  if (!body) return '';
+  if (/<(p|br|div|html|body|span|table|tr|td)\b[^>]*>/i.test(body)) {
+    return body;
+  }
+  const formatted = body.replace(/\r?\n/g, '<br />');
+  return `<div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #1e293b;">${formatted}</div>`;
+};
+
 // Timezone-based delay scheduling calculator
 const calculateNextSendTime = (campaign: Campaign, currentStepIdx: number, baseDate: Date): Date => {
   const step = campaign.steps[currentStepIdx];
   const delayDays = step ? step.delayDays : 0;
   
-  // If first step has 0 delay days, schedule it to run immediately (5 seconds in future)
-  if (currentStepIdx === 0 && delayDays === 0) {
+  // If first step has 0 delay days and no preferred time is set, schedule it to run immediately (5 seconds in future)
+  if (currentStepIdx === 0 && delayDays === 0 && !campaign.preferredTime) {
     return new Date(Date.now() + 5000);
   }
   
@@ -2647,7 +2657,7 @@ const runCampaignEngine = async (specificCampaignId?: string) => {
               };
 
               const subject = replacePlaceholders(currentStep.subject);
-              const body = replacePlaceholders(currentStep.bodyTemplate);
+              const body = formatEmailBodyToHtml(replacePlaceholders(currentStep.bodyTemplate));
 
               let messageId = `sim_${Date.now()}`;
               let threadId = `sim_thread_${Date.now()}`;
